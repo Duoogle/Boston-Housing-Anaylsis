@@ -1,0 +1,436 @@
+---
+title: "Predicting Boston Home Values: A Multiple Linear Regression Analysis"
+author: 
+  - name: "Trenton Garren, Annie Huppenthal"
+    affiliation: "University of Colorado Denver"
+format: 
+  html:
+    embed-resources: true
+    theme: cosmo    
+editor: source
+warning: false
+---
+
+## Introduction and Research Questions.
+
+This project explores the factors influencing the median value of owner-occupied homes ($\text{MEDV}$, in \$1000s) in 506 Boston suburbs during the 1970s. We will use Multiple Linear Regression to quantify these relationships.
+
+Our primary research questions are:
+
+-   How do housing characteristics (e.g., $\text{RM}$) and neighborhood factors (e.g., $\text{CRIM}$, $\text{NOX}$) affect median home values?
+
+-   Which factors are the strongest predictors of housing prices?
+
+-   Does proximity to the Charles River ($\text{CHAS}$) or lower pollution levels significantly increase $\text{MEDV}$?\
+
+## Setup and Data Loading
+
+# loading libaries
+
+```{r}
+library(tidyverse)
+library(MASS)
+library(car)
+library(usethis)
+```
+
+# Data loading and Cleaning
+
+```{r}
+#setwd("/Users/duoogle/Downloads")
+boston_df <- read.csv("boston_housing_data.csv")
+```
+
+```{r}
+# Load the data from the built-in package
+data("Boston", package = "MASS")
+boston_df <- as_tibble(Boston) |> 
+  rename(MEDV = medv)
+head(boston_df)
+```
+
+```{r}
+# 1. Convert the binary variable CHAS to a factor for proper modeling
+boston_df <- boston_df |>
+ mutate(chas = factor(as.numeric(chas), 
+                      levels = c(0, 1), 
+                      labels = c("No", "Yes")))
+
+# 2. Add a LOG-TRANSFORMED version of the CRIM variable
+#    (Add 1 before taking the log to handle zero values, a common practice)
+boston_df <- boston_df |>
+  mutate(lcrim = log(crim + 1))
+
+# 3. Add a LOG-TRANSFORMED version of the LSTAT variable
+#    (LSTAT showed a non-linear relationship in the scatter plot,
+#     so a transformation might help)
+boston_df <- boston_df |>
+  mutate(llstat = log(lstat))
+
+# Display structure and first few rows
+cat("Dataset Dimensions (Observations x Variables):", dim(boston_df), "\n")
+cat("First few rows of the data:\n")
+print(head(boston_df))
+```
+
+# Numerical Summaries
+
+```{r}
+# Base R Summary of the Response Variable
+print("Base R Summary of Median Home Value (MEDV in $1000s):")
+summary(boston_df$MEDV)
+
+# Summary of Key Predictor Variables
+print("\nSummary of Key Predictor Variables (RM, LSTAT, CRIM, NOX):")
+boston_df |>
+  dplyr::select(rm, llstat, lcrim, nox) |>  
+  summary()
+```
+
+# Exploratory Plots
+
+```{r}
+# Density Plot for MEDV
+p_density <- boston_df |>
+  ggplot(aes(x = MEDV)) +
+  geom_histogram(aes(y = after_stat(density)), binwidth = 2, fill = "#1F78B4", color = "white") +
+  geom_density(color = "red", linewidth = 1.2) +
+  labs(title = "Distribution of MEDV", x = "Median Home Value ($1000s)") +
+  theme_minimal()
+
+p_density
+```
+
+The density plot of the Median Home Value ($\text{MEDV}$) reveals that the distribution is unimodal (having a single peak) but is positively skewed (or right-skewed). This skewness is evidenced by the mean (\~$\$22,500$) being slightly greater than the median (\~$\$21,200$), and visually, by the tail of the distribution extending toward the higher values. This positive skew is typical for pricing data, where a small number of high-value observations pull the average up. Crucially, the plot displays a sharp, high spike at the maximum value of \$50,000. This spike indicates data censoring or truncation; homes valued above this amount were simply recorded as $\$50,000$. This observation is a significant limitation for the regression model, as it means the model will be unable to accurately predict any home values above this ceiling, potentially leading to errors in the residuals for the highest-priced properties.
+
+```{r}
+# Scatter Plots for Key Relationships (RM, LSTAT, CRIM, CHAS)
+p1 <- boston_df |> ggplot(aes(x = rm, y = MEDV)) + geom_point(alpha = 0.6) + geom_smooth(method = "lm") + labs(title = "Rooms (RM): Strong Positive")
+
+p2 <- boston_df |> ggplot(aes(x = lstat, y = MEDV)) + geom_point(alpha = 0.6) + geom_smooth(method = "loess") + labs(title = "Lower Status (LSTAT): Strong Negative, Non-Linear")
+
+p3 <- boston_df |> ggplot(aes(x = crim, y = MEDV)) + geom_point(alpha = 0.6) + geom_smooth(method = "lm") + labs(title = "Crime Rate (CRIM): Negative, Highly Skewed")
+
+p4 <- boston_df |> ggplot(aes(x = chas, y = MEDV)) + geom_boxplot() + labs(title = "Charles River (CHAS): Higher Median Value")
+```
+
+```{r}
+# Combine and Display
+p1
+p2
+p3
+p4
+```
+
+p1-This plot shows the relationship between the per capita crime rate ($\text{CRIM}$) and the median home value ($\text{MEDV}$). The relationship is : Negative, but highly concentrated/skewed. The vast majority of data points are clustered near $\text{CRIM} = 0$, where $\text{MEDV}$ spans its full range. As the crime rate ($\text{CRIM}$) moves away from zero, the maximum home value quickly drops. The data is heavily skewed, with few suburbs having a high crime rate. This confirms that a log-transformation ($\text{LCRIM}$) is necessary to normalize the distribution of this predictor and allow the linear model to better capture its effect across its range.
+
+p2-This plot shows the relationship between the percentage of the lower-status population ($\text{LSTAT}$) and the median home value ($\text{MEDV}$).The relationship is Strong, negative, and distinctly non-linear (curved).As the percentage of the lower-status population ($\text{LSTAT}$) rises, the median home value ($\text{MEDV}$) drops sharply. Crucially, the relationship is not a straight line; it appears curved (concave up). This visual evidence confirms that the effect of $\text{LSTAT}$ is stronger at lower values and less severe at higher values. This plot is the primary justification for your decision to use a log-transformation ($\text{LLSTAT}$) on this variable.
+
+p3-This plot shows the relationship between the per capita crime rate ($\text{CRIM}$) and the median home value ($\text{MEDV}$).The relationship is Negative, but highly concentrated/skewed.The vast majority of data points are clustered near $\text{CRIM} = 0$, where $\text{MEDV}$ spans its full range. As the crime rate ($\text{CRIM}$) moves away from zero, the maximum home value quickly drops. The data is heavily skewed, with few suburbs having a high crime rate. This confirms that a log-transformation ($\text{LCRIM}$) is necessary to normalize the distribution of this predictor and allow the linear model to better capture its effect across its range.
+
+p4-This plot, typically a boxplot, compares the distribution of $\text{MEDV}$ based on whether the tract borders the Charles River ($\text{CHAS} = \text{Yes}$ or $1$). The relationship is Positive shift in median value. The boxplot for tracts bordering the river ($\text{CHAS} = \text{Yes}$) shows that its median and interquartile range are noticeably higher than those for tracts that do not border the river ($\text{CHAS} = \text{No}$). This strongly suggests that proximity to the Charles River is a significant positive predictor of median home value, directly answering Research Question 3.
+
+# Initial Model Fit and Collinearity
+
+We begin with a five-predictor model ($\text{Model}_1$) based on the strongest relationships observed in the EDA, using the original variables ($\text{crim}$, $\text{lstat}$).
+
+```{r}
+# Fit the initial model
+model_1 <- lm(MEDV ~ rm + llstat + lcrim + nox + chas, data = boston_df)
+
+# Print the model summary
+cat("--- Initial Model Summary ---\n")
+summary(model_1)
+
+# 2. Calculate VIF for Collinearity Diagnosis
+cat("\n--- Variance Inflation Factor (VIF) ---\n")
+vif_values <- vif(model_1)
+print(vif_values)
+```
+
+Interpretation of VIF: The VIF values for all initial predictors are low (typically all will be below 3 in this restricted model). Since the VIF is well below the common threshold of 5, there is no significant multicollinearity among these five chosen variables. This means the variance of our coefficient estimates is not excessively inflated, and the model is robust against this assumption violation.
+```{r}
+key_cols <- c("MEDV","rm", "lstat", "crim", "nox","indus", "dis","ptratio","zn","rad","tax","age", "black")
+
+# The pairs function creates a scatterplot matrix
+pairs(boston_df[, key_cols])
+```
+
+
+# Stepwise Variable Selection for Optimal Model
+
+To find the most efficient model, we use the $\text{AIC}$ criterion for backward and forward selection. We will use the full set of 12 original predictors as the upper scope.
+
+```{r}
+# Step 1: Fit the initial model
+final_test <- lm(MEDV ~ lcrim + zn + chas + nox + rm + age + dis + rad + tax + 
+                 ptratio + llstat, data = boston_df)
+
+# Step 3: Identify the indices of the top 3 outliers
+#top_outliers <- order(cooksd, decreasing = TRUE)[1:5]  # indices of largest Cook's distances
+
+# Step 4: Remove those rows from your dataset
+# Combine the indices into a vector and remove them
+boston_df_clean <- boston_df[-c(369, 372, 373), ]
+
+
+# Step 5: Fit the model again without the outliers
+final_test_clean <- lm(MEDV ~ lcrim + zn + chas + nox + rm + age + dis + rad + tax + 
+                       ptratio + llstat, data = boston_df_clean)
+
+# Step 6: Check the summary
+summary(final_test_clean)
+```
+
+## Backward Elimination
+
+Backward elimination starts with the full model and removes variables one by one until the $\text{AIC}$ is minimized.
+
+```{r}
+# Define the Full Scope Model (All 12 predictors)
+full_model <- lm(MEDV ~ lcrim + zn + indus + chas + nox + rm + 
+                       age + dis + rad + tax + ptratio + llstat, 
+                 data = boston_df_clean)
+
+# Perform backward elimination
+cat("--- Backward Elimination: Formula Selected ---\n")
+best_model_backward <- stepAIC(full_model, 
+                              direction = "backward", 
+                              trace = FALSE)
+
+# Print the final formula and summary
+print(formula(best_model_backward))
+#summary(best_model_backward)
+```
+
+Defining the null and model and the upper limit
+
+To run forward selection, we need two components: - Null Model: $\text{MEDV}$ explained by nothing but the intercept (2$\text{medv} \sim 1$). - Scope (Upper Limit): A model containing all potential predictors to choose from.
+
+```{r}
+# Define the Null Model (only the intercept)
+null_model <- lm(MEDV ~ 1, data = boston_df_clean)
+
+# Define the Full Scope of available predictors (using transformed variables)
+scope_full <- list(
+  lower = formula(null_model),
+  upper = formula(lm(MEDV ~ lcrim + zn + indus + chas + nox + rm + 
+                           age + dis + rad + tax + ptratio + llstat, 
+                      data = boston_df_clean))
+)
+```
+
+## Running the Forward Selection
+
+We use the stepAIC function with the direction = "forward" argument and specify the scope.
+
+```{r}
+# Define the Null Model (for the lower scope)
+null_model <- lm(MEDV ~ 1, data = boston_df_clean)
+
+# Define the Scope limits
+scope_full <- list(
+  lower = formula(null_model),
+  upper = formula(full_model) # Uses the full model defined above
+)
+
+# Perform forward selection
+cat("--- Forward Selection: Formula Selected ---\n")
+best_model_forward <- stepAIC(null_model, 
+                              direction = "forward", 
+                              scope = scope_full,
+                              trace = FALSE)
+
+# Print the final formula and summary
+print(formula(best_model_forward))
+# summary(best_model_forward)
+```
+
+```{r}
+best_model_both <- step(full_model, direction = "both")
+print(formula(best_model_both))
+```
+
+\
+Final model
+
+```{r}
+# --- Define Final Model Formula (Selected by AIC) ---
+# NOTE: This formula uses the transformed variables (lcrim, llstat) 
+# and the 10 predictors identified by the stepwise selection.
+
+# final_formula <- MEDV ~ rm + llstat + ptratio + dis
+
+final_formula <- MEDV ~ lcrim + chas + nox + rm + age + dis + rad + tax + 
+    ptratio + llstat
+
+# Fit the final model to the transformed data
+final_model_2 <- lm(final_formula, data = boston_df)
+
+# Print the full summary for analysis
+cat("--- FINAL MODEL (Model_2) SUMMARY ---\n")
+summary(final_model_2)
+
+# --- Optional: Check Model Assumptions (Residual Plots) ---
+# (Member B's responsibility, critical for final report validity)
+# par(mfrow = c(2, 2)) # Uncomment this line to view all four plots in a grid
+# plot(final_model_2)
+```
+
+N E E D INTPRETATION
+
+```{r}
+# Step 1: Fit the initial model
+final_test <- lm(MEDV ~ lcrim + zn + chas + nox + rm + age + dis + rad + tax + 
+                 ptratio + llstat, data = boston_df)
+
+# Step 3: Identify the indices of the top 3 outliers
+#top_outliers <- order(cooksd, decreasing = TRUE)[1:5]  # indices of largest Cook's distances
+
+# Step 4: Remove those rows from your dataset
+# Combine the indices into a vector and remove them
+boston_df_clean <- boston_df[-c(369, 372, 373), ]
+
+
+# Step 5: Fit the model again without the outliers
+final_test_clean <- lm(MEDV ~ lcrim + zn + chas + nox + rm + age + dis + rad + tax + 
+                       ptratio + llstat, data = boston_df_clean)
+
+# Step 6: Check the summary
+summary(final_test_clean)
+```
+
+```{r}
+# Show the row numbers of the removed outliers
+#top_outliers
+
+```
+
+```{r}
+final_test <- lm(MEDV ~ lcrim + zn + chas + nox + rm + age + dis + rad + tax + 
+    ptratio + llstat, data = boston_df)
+summary(final_test)
+```
+
+```{r}
+vif(final_test)
+```
+
+```{r}
+cor(boston_df[, c("lcrim","zn","nox","rm","age","dis","rad","tax","ptratio","llstat")])
+```
+
+```{r}
+library(leaps)
+
+# Using a formula on the cleaned dataset
+cp_fit <- regsubsets(MEDV ~ lcrim + zn + chas + nox + rm + age + dis + rad + tax + 
+                     ptratio + llstat,
+                     data = boston_df_clean,
+                     nvmax = 11)  # maximum number of predictors to consider
+
+
+cp_summary <- summary(cp_fit)
+
+plot(cp_summary$cp, xlab = "Number of Variables", ylab = "Mallows Cp",
+     type = "b", pch = 19)
+
+# Add reference line Cp = p
+abline(0, 1, col = "red", lty = 2)
+
+```
+
+```{r}
+par(mfrow = c(2,2))
+plot(final_test_clean)
+#plot(final_test, which = 1)
+
+#plot(final_test, which = 2)
+
+#plot(final_test, which = 3)
+
+#plot(final_test, which = 5)
+```
+
+```{r}
+r <- rstandard(final_test)
+head(order(abs(r), decreasing = TRUE), 10)
+```
+
+```{r}
+boston_df[c(372, 373, 369), ]
+```
+
+```{r}
+cd  <- cooks.distance(final_test)
+lev <- hatvalues(final_test)
+
+outliers <- which(
+  abs(rstandard(final_test)) > 3 |
+    cd > 4/length(cd) |
+    lev > 2 * mean(lev)
+)
+outliers
+```
+
+```{r}
+boston_df[outliers, ]
+```
+
+```{r}
+plot(cp_summary$bic, type = "b", pch = 19,
+     xlab = "Number of Variables", ylab = "BIC")
+
+plot(cp_summary$adjr2, type = "b", pch = 19,
+     xlab = "Number of Variables", ylab = "Adjusted R²")
+
+```
+
+```{r}
+# Check which predictors are included for each model size
+cp_summary$which
+
+# This shows a logical matrix:
+# Rows = models with 1, 2, ..., nvmax predictors
+# Columns = predictors (TRUE = included, FALSE = not included)
+# You can see which 9-predictor model has the lowest BIC
+bic_values <- cp_summary$bic
+bic_values
+
+# Find the 9-predictor model with the lowest BIC
+best_9_index <- which.min(bic_values[9])  # usually only one, or just look at row 9
+cp_summary$which[9, ]  # TRUE = predictor is included
+
+```
+
+```{r}
+final_model_clean <- lm(MEDV ~ lcrim + chas + nox + rm + dis + rad + tax + 
+                       ptratio + llstat, data = boston_df_clean)
+
+# Step 6: Check the summary
+summary(final_model_clean)
+```
+
+```{r}
+par(mfrow = c(1,1))
+#plot(final_test_clean)
+plot(final_model_clean, which = 1)
+
+plot(final_model_clean, which = 2)
+
+plot(final_model_clean, which = 3)
+
+plot(final_model_clean, which = 5)
+```
+
+```{r}
+anova(final_model_clean)
+```
+
+```{r}
+linearHypothesis(final_model_clean, c("rm = 0", "llstat = 0"))
+```
+
+```{r}
+confint(final_model_clean, level = 0.95)
+```
